@@ -35,7 +35,7 @@ class E2BEnvironment(BaseEnvironment):
 
     def __init__(
         self,
-        image: str = "base",
+        image: str = "hermes",
         cwd: str = "/home/user",
         timeout: int = 60,
         cpu: int = 1,
@@ -66,7 +66,7 @@ class E2BEnvironment(BaseEnvironment):
         custom_resources = cpu != 1 or memory_gib != 5
 
         _valid_str = ", ".join(str(s) for s in sorted(_VALID_SIZES))
-        custom_image = image not in ("base", "e2b/hermes:lts")
+        custom_image = image != "hermes"
 
         if custom_image:
             # User provided a custom template — use it as-is.
@@ -82,8 +82,6 @@ class E2BEnvironment(BaseEnvironment):
                     f"(from {memory} MiB). Available templates: e2b/hermes:<cpu>-<memory_gib>")
             image = f"e2b/hermes:{cpu}-{memory_gib}"
             logger.info("E2B: using size-tagged template %s", image)
-        else:
-            image = "e2b/hermes:lts"
 
         # Use a stable label so sandboxes persist across CLI invocations.
         # The ephemeral task_id changes every run; the template is constant.
