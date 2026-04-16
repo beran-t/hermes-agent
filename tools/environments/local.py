@@ -100,6 +100,7 @@ def _build_provider_env_blocklist() -> frozenset:
         "MODAL_TOKEN_ID",
         "MODAL_TOKEN_SECRET",
         "DAYTONA_API_KEY",
+        "E2B_API_KEY",
     })
     return frozenset(blocked)
 
