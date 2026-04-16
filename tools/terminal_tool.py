@@ -650,7 +650,7 @@ def _get_env_config() -> Dict[str, Any]:
         "singularity_image": os.getenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
         "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", default_image),
         "daytona_image": os.getenv("TERMINAL_DAYTONA_IMAGE", default_image),
-        "e2b_image": os.getenv("TERMINAL_E2B_IMAGE", "hermes"),
+        "e2b_image": os.getenv("TERMINAL_E2B_IMAGE", "e2b/hermes:lts"),
         "cwd": cwd,
         "host_cwd": host_cwd,
         "docker_mount_cwd_to_workspace": mount_docker_cwd,
@@ -1711,7 +1711,7 @@ if __name__ == "__main__":
     print(f"  TERMINAL_SINGULARITY_IMAGE: {os.getenv('TERMINAL_SINGULARITY_IMAGE', f'docker://{default_img}')}")
     print(f"  TERMINAL_MODAL_IMAGE: {os.getenv('TERMINAL_MODAL_IMAGE', default_img)}")
     print(f"  TERMINAL_DAYTONA_IMAGE: {os.getenv('TERMINAL_DAYTONA_IMAGE', default_img)}")
-    print(f"  TERMINAL_E2B_IMAGE: {os.getenv('TERMINAL_E2B_IMAGE', 'hermes')}")
+    print(f"  TERMINAL_E2B_IMAGE: {os.getenv('TERMINAL_E2B_IMAGE', 'e2b/hermes:lts')}")
     print(f"  TERMINAL_CWD: {os.getenv('TERMINAL_CWD', os.getcwd())}")
     from hermes_constants import display_hermes_home as _dhh
     print(f"  TERMINAL_SANDBOX_DIR: {os.getenv('TERMINAL_SANDBOX_DIR', f'{_dhh()}/sandboxes')}")

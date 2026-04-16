@@ -22,12 +22,15 @@ from tools.environments.file_sync import (
 
 logger = logging.getLogger(__name__)
 
+# Default sandbox timeout in seconds (10 minutes).
+_SANDBOX_TIMEOUT_S = 600
+
 
 class E2BEnvironment(BaseEnvironment):
     """E2B cloud sandbox execution backend.
 
     Spawn-per-call via _ThreadedProcessHandle wrapping blocking SDK calls.
-    cancel_fn wired to sandbox.kill() for interrupt support.
+    cancel_fn wired to CommandHandle.kill() for interrupt support.
     Shell timeout wrapper preserved (SDK timeout may be unreliable).
     """
 
@@ -35,7 +38,7 @@ class E2BEnvironment(BaseEnvironment):
 
     def __init__(
         self,
-        image: str = "hermes",
+        image: str = "e2b/hermes:lts",
         cwd: str = "/home/user",
         timeout: int = 60,
         cpu: int = 1,
@@ -66,7 +69,7 @@ class E2BEnvironment(BaseEnvironment):
         custom_resources = cpu != 1 or memory_gib != 5
 
         _valid_str = ", ".join(str(s) for s in sorted(_VALID_SIZES))
-        custom_image = image != "hermes"
+        custom_image = image != "e2b/hermes:lts"
 
         if custom_image:
             # User provided a custom template — use it as-is.
@@ -85,33 +88,10 @@ class E2BEnvironment(BaseEnvironment):
 
         # Use a stable label so sandboxes persist across CLI invocations.
         # The ephemeral task_id changes every run; the template is constant.
-        labels = {"hermes_provider": "hermes", "hermes_template": image}
+        self._labels = {"hermes_provider": "hermes", "hermes_template": image}
+        self._image = image
 
-        # Try to reconnect to an existing sandbox via metadata lookup
-        if self._persistent:
-            try:
-                page = Sandbox.list(
-                    query=SandboxQuery(metadata=labels), limit=1,
-                )
-                items = page.next_items()
-                if items:
-                    self._sandbox = Sandbox.connect(items[0].sandbox_id)
-                    self._sandbox.set_timeout(600)
-                    logger.info("E2B: reconnected to sandbox %s (template=%s)",
-                                self._sandbox.sandbox_id, image)
-            except Exception as e:
-                logger.debug("E2B: could not reconnect (template=%s): %s",
-                             image, e)
-                self._sandbox = None
-
-        if self._sandbox is None:
-            self._sandbox = Sandbox.create(
-                template=image,
-                timeout=600,
-                metadata=labels,
-            )
-            logger.info("E2B: created sandbox %s (template=%s)",
-                        self._sandbox.sandbox_id, image)
+        self._sandbox = self._get_or_create_sandbox()
 
         # Detect remote home dir
         self._remote_home = "/home/user"
@@ -135,10 +115,62 @@ class E2BEnvironment(BaseEnvironment):
         self._sync_manager.sync(force=True)
         self.init_session()
 
+    # ------------------------------------------------------------------
+    # Sandbox get-or-create
+    # ------------------------------------------------------------------
+
+    def _get_or_create_sandbox(self):
+        """Find an existing sandbox via metadata or create a new one.
+
+        For persistent sandboxes, uses ``lifecycle={"on_timeout": "pause",
+        "auto_resume": True}`` so sandboxes pause instead of being killed
+        when the timeout expires, and auto-resume when reconnected via
+        ``Sandbox.connect()``.
+
+        Returns a ready-to-use Sandbox instance.
+        """
+        from e2b import Sandbox
+
+        sandbox = None
+
+        if self._persistent:
+            try:
+                page = Sandbox.list(
+                    query=self._SandboxQuery(metadata=self._labels),
+                    limit=1,
+                )
+                items = page.next_items()
+                if items:
+                    sandbox = Sandbox.connect(items[0].sandbox_id)
+                    sandbox.set_timeout(_SANDBOX_TIMEOUT_S)
+                    logger.info("E2B: reconnected to sandbox %s (template=%s)",
+                                sandbox.sandbox_id, self._image)
+            except Exception as e:
+                logger.debug("E2B: could not reconnect (template=%s): %s",
+                             self._image, e)
+                sandbox = None
+
+        if sandbox is None:
+            lifecycle = None
+            if self._persistent:
+                lifecycle = {"on_timeout": "pause", "auto_resume": True}
+            sandbox = Sandbox.create(
+                template=self._image,
+                timeout=_SANDBOX_TIMEOUT_S,
+                metadata=self._labels,
+                lifecycle=lifecycle,
+            )
+            logger.info("E2B: created sandbox %s (template=%s)",
+                        sandbox.sandbox_id, self._image)
+
+        return sandbox
+
+    # ------------------------------------------------------------------
+    # File operations
+    # ------------------------------------------------------------------
+
     def _e2b_upload(self, host_path: str, remote_path: str) -> None:
         """Upload a single file via E2B SDK."""
-        parent = str(Path(remote_path).parent)
-        self._sandbox.commands.run(f"mkdir -p {parent}")
         content = Path(host_path).read_bytes()
         self._sandbox.files.write(remote_path, content)
 
@@ -175,25 +207,13 @@ class E2BEnvironment(BaseEnvironment):
     # ------------------------------------------------------------------
 
     def _ensure_sandbox_ready(self) -> None:
-        """Verify sandbox is still alive by extending its timeout."""
+        """Verify sandbox is still alive, reconnect if needed."""
+        if self._sandbox.is_running:
+            return
+        logger.warning("E2B: sandbox not running, attempting reconnect")
         try:
-            self._sandbox.set_timeout(600)
+            self._sandbox = self._get_or_create_sandbox()
         except Exception as e:
-            logger.warning("E2B: sandbox may be dead, attempting reconnect: %s", e)
-            labels = {"hermes_task_id": self._task_id}
-            try:
-                page = self._Sandbox.list(
-                    query=self._SandboxQuery(metadata=labels), limit=1,
-                )
-                items = page.next_items()
-                if items:
-                    self._sandbox = self._Sandbox.connect(items[0].sandbox_id)
-                    self._sandbox.set_timeout(600)
-                    logger.info("E2B: reconnected to sandbox %s",
-                                self._sandbox.sandbox_id)
-                    return
-            except Exception:
-                pass
             raise RuntimeError("E2B: sandbox is no longer available") from e
 
     def _before_execute(self) -> None:
@@ -211,18 +231,19 @@ class E2BEnvironment(BaseEnvironment):
         kills the running process — not the entire sandbox.
         """
         sandbox = self._sandbox
-        handle_ref: list = []
+        handle_holder = SimpleHolder()
 
         def cancel():
-            if handle_ref:
+            h = handle_holder.value
+            if h is not None:
                 try:
-                    handle_ref[0].kill()
+                    h.kill()
                 except Exception:
                     pass
 
         def exec_fn() -> tuple[str, int]:
             handle = sandbox.commands.run(cmd_string, background=True, timeout=timeout)
-            handle_ref.append(handle)
+            handle_holder.value = handle
             result = handle.wait()
             output = (result.stdout or "") + (result.stderr or "")
             return (output, result.exit_code)
@@ -235,8 +256,8 @@ class E2BEnvironment(BaseEnvironment):
                 return
             try:
                 if self._persistent:
-                    self._sandbox.set_timeout(600)
-                    logger.info("E2B: kept sandbox %s alive (persistent)",
+                    self._sandbox.pause()
+                    logger.info("E2B: paused sandbox %s (persistent)",
                                 self._sandbox.sandbox_id)
                 else:
                     self._sandbox.kill()
@@ -245,3 +266,11 @@ class E2BEnvironment(BaseEnvironment):
             except Exception as e:
                 logger.warning("E2B: cleanup failed: %s", e)
             self._sandbox = None
+
+
+class SimpleHolder:
+    """Mutable holder for a single value, used as a closure ref."""
+    __slots__ = ("value",)
+
+    def __init__(self):
+        self.value = None

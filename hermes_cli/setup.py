@@ -1429,7 +1429,7 @@ def setup_terminal_backend(config: dict):
                 print_success("    Configured")
 
         # E2B template/image
-        current_template = config.get("terminal", {}).get("e2b_image", "base")
+        current_template = config.get("terminal", {}).get("e2b_image", "e2b/hermes:lts")
         template = prompt("  Sandbox template", current_template)
         config["terminal"]["e2b_image"] = template
         save_env_value("TERMINAL_E2B_IMAGE", template)

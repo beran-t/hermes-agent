@@ -49,6 +49,7 @@ def _make_sandbox(sandbox_id="sb-e2b-123"):
 
 def _patch_e2b_imports(monkeypatch):
     """Patch the e2b SDK so E2BEnvironment can be imported without it."""
+    import enum
     import types as _types
 
     e2b_mod = _types.ModuleType("e2b")
@@ -57,8 +58,20 @@ def _patch_e2b_imports(monkeypatch):
     sandbox_api_mod = _types.ModuleType("e2b.sandbox.sandbox_api")
     sandbox_api_mod.SandboxQuery = MagicMock
 
+    # Mock SandboxState enum used for listing running/paused sandboxes
+    class _SandboxState(str, enum.Enum):
+        RUNNING = "running"
+        PAUSED = "paused"
+
+    state_mod = _types.ModuleType("e2b.api.client.models.sandbox_state")
+    state_mod.SandboxState = _SandboxState
+
     monkeypatch.setitem(__import__("sys").modules, "e2b", e2b_mod)
     monkeypatch.setitem(__import__("sys").modules, "e2b.sandbox.sandbox_api", sandbox_api_mod)
+    monkeypatch.setitem(__import__("sys").modules, "e2b.api", _types.ModuleType("e2b.api"))
+    monkeypatch.setitem(__import__("sys").modules, "e2b.api.client", _types.ModuleType("e2b.api.client"))
+    monkeypatch.setitem(__import__("sys").modules, "e2b.api.client.models", _types.ModuleType("e2b.api.client.models"))
+    monkeypatch.setitem(__import__("sys").modules, "e2b.api.client.models.sandbox_state", state_mod)
     return e2b_mod, sandbox_api_mod
 
 
@@ -221,11 +234,11 @@ class TestPersistence:
 # ---------------------------------------------------------------------------
 
 class TestCleanup:
-    def test_persistent_cleanup_keeps_sandbox_alive(self, make_env):
+    def test_persistent_cleanup_pauses_sandbox(self, make_env):
         env = make_env(persistent=True)
         sb = env._sandbox
         env.cleanup()
-        sb.set_timeout.assert_called()
+        sb.pause.assert_called_once()
 
     def test_non_persistent_cleanup_kills_sandbox(self, make_env):
         env = make_env(persistent=False)
@@ -240,7 +253,7 @@ class TestCleanup:
 
     def test_cleanup_swallows_errors(self, make_env):
         env = make_env(persistent=True)
-        env._sandbox.set_timeout.side_effect = RuntimeError("timeout failed")
+        env._sandbox.pause.side_effect = RuntimeError("pause failed")
         env.cleanup()  # should not raise
         assert env._sandbox is None
 
